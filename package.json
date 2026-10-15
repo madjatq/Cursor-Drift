@@ -1,0 +1,6 @@
+{
+  "name": "cursor-drift",
+  "private": true,
+  "engines": { "node": ">=20" },
+  "scripts": { "test": "node --test tests/cursor-drift.test.js" }
+}
