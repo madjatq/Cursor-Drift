@@ -32,8 +32,10 @@ test('clamps numeric settings and sanitizes enum/color values', () => {
 });
 
 test('corrupted storage values safely fall back to defaults', () => {
-  const api = { GM_getValue: () => '{broken', localStorage: null };
+  let reads = 0;
+  const api = { GM_getValue: () => { reads++; return '{broken'; }, GM_setValue: () => {}, localStorage: null };
   assert.deepEqual(loadSettings(api), DEFAULT_SETTINGS);
+  assert.equal(reads, 1);
 });
 
 test('prefers GM storage and saves normalized settings through GM', () => {
@@ -49,7 +51,7 @@ test('prefers GM storage and saves normalized settings through GM', () => {
   assert.equal(JSON.parse(calls[0][1]).preset, 'Comet Trail');
 });
 
-test('falls back to namespaced localStorage and persists across injected sites', () => {
+test('falls back to namespaced localStorage', () => {
   const backing = new Map();
   const makeApi = () => ({
     localStorage: {
@@ -59,8 +61,37 @@ test('falls back to namespaced localStorage and persists across injected sites',
   });
   const first = makeApi();
   saveSettings(first, { preset: 'Soft Bloom', enabled: false });
-  const second = makeApi();
-  assert.equal(loadSettings(second).preset, 'Soft Bloom');
-  assert.equal(loadSettings(second).enabled, false);
+  assert.equal(loadSettings(first).preset, 'Soft Bloom');
+  assert.equal(loadSettings(first).enabled, false);
   assert.equal(backing.has(STORAGE_KEY), true);
+});
+
+test('persists across sites through shared GM storage with independent local stores', () => {
+  const globalBacking = new Map();
+  const makeSite = () => {
+    const localBacking = new Map();
+    return {
+      GM_getValue: key => globalBacking.get(key),
+      GM_setValue: (key, value) => globalBacking.set(key, value),
+      localStorage: { getItem: key => localBacking.get(key) ?? null, setItem: (key, value) => localBacking.set(key, value) },
+    };
+  };
+  const first = makeSite();
+  const second = makeSite();
+  first.localStorage.setItem(STORAGE_KEY, JSON.stringify({ preset: 'Stardust' }));
+  second.localStorage.setItem(STORAGE_KEY, JSON.stringify({ preset: 'Neon Pulse' }));
+  saveSettings(first, { preset: 'Comet Trail', enabled: false });
+  assert.equal(loadSettings(second).preset, 'Comet Trail');
+  assert.equal(loadSettings(second).enabled, false);
+  assert.equal(JSON.parse(second.localStorage.getItem(STORAGE_KEY)).preset, 'Neon Pulse');
+});
+
+test('denied localStorage discovery safely loads defaults', () => {
+  const api = { get localStorage() { throw new DOMException('Access denied', 'SecurityError'); } };
+  assert.deepEqual(loadSettings(api), DEFAULT_SETTINGS);
+});
+
+test('denied localStorage discovery safely saves normalized values', () => {
+  const api = { get localStorage() { throw new DOMException('Access denied', 'SecurityError'); } };
+  assert.deepEqual(saveSettings(api, { preset: 'Soft Bloom' }), normalizeSettings({ preset: 'Soft Bloom' }));
 });

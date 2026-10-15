@@ -65,11 +65,19 @@
 
   function getStorage(api) {
     const source = api || root || {};
-    const gmGet = source.GM_getValue;
-    const gmSet = source.GM_setValue;
-    if (typeof gmGet === 'function' && typeof gmSet === 'function') return { type: 'gm', get: gmGet, set: gmSet };
-    const local = source.localStorage;
-    if (local && typeof local.getItem === 'function' && typeof local.setItem === 'function') return { type: 'local', get: local.getItem.bind(local), set: local.setItem.bind(local) };
+    try {
+      const gmGet = source.GM_getValue;
+      const gmSet = source.GM_setValue;
+      if (typeof gmGet === 'function' && typeof gmSet === 'function') return { type: 'gm', get: gmGet, set: gmSet };
+    } catch (_) {
+      // Continue to local storage when GM API discovery is unavailable.
+    }
+    try {
+      const local = source.localStorage;
+      if (local && typeof local.getItem === 'function' && typeof local.setItem === 'function') return { type: 'local', get: local.getItem.bind(local), set: local.setItem.bind(local) };
+    } catch (_) {
+      // Accessing localStorage itself can throw in restricted browser contexts.
+    }
     return null;
   }
 
