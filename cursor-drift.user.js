@@ -329,7 +329,9 @@
 
     function setPaused(value) {
       if (destroyed) return;
-      paused = Boolean(value);
+      const nextPaused = Boolean(value);
+      if (nextPaused === paused) return;
+      paused = nextPaused;
       if (paused) clear();
     }
 

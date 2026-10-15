@@ -294,6 +294,31 @@ test('renderer fades naturally, stops after expiry, and removes scheduled work o
   assert.equal(h.frames.size, 0);
 });
 
+// Catches repeated disabled/editing pointer events causing redundant full-canvas clears.
+test('renderer pause clears only on transitions and cancels each newly active frame', () => {
+  const h = rendererHarness();
+  h.renderer.addPointer(10, 20);
+  assert.equal(h.frames.size, 1);
+  h.operations.length = 0;
+  h.renderer.setPaused(true);
+  assert.equal(h.frames.size, 0);
+  assert.equal(h.operations.filter(operation => operation.name === 'clearRect').length, 1);
+  for (let i = 0; i < 100; i++) {
+    h.renderer.setPaused(true);
+    h.renderer.addPointer(i, i);
+  }
+  assert.equal(h.frames.size, 0);
+  assert.equal(h.operations.filter(operation => operation.name === 'clearRect').length, 1);
+  h.renderer.setPaused(false);
+  h.renderer.setPaused(false);
+  h.renderer.addPointer(30, 40);
+  assert.equal(h.frames.size, 1);
+  h.renderer.setPaused(true);
+  assert.equal(h.frames.size, 0);
+  assert.equal(h.operations.filter(operation => operation.name === 'clearRect').length, 2);
+  h.renderer.destroy();
+});
+
 test('renderer applies reduced-motion capacity without modifying stored density', () => {
   const h = rendererHarness({ preset: 'Soft Bloom', density: 1, lifetime: 3000 });
   for (let i = 0; i < 90; i++) {
