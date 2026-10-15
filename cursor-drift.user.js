@@ -7,12 +7,15 @@
 // @match        https://*/*
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @run-at       document-idle
+// @noframes
 // ==/UserScript==
 
 (function (root) {
   'use strict';
 
   const STORAGE_KEY = 'cursor-drift:settings';
+  const SCHEMA_VERSION = 1;
   const DEFAULT_SETTINGS = Object.freeze({
     enabled: true,
     preset: 'Stardust',
@@ -92,6 +95,7 @@
     try {
       const stored = storage.get(STORAGE_KEY);
       const parsed = parseStored(stored);
+      if (parsed && parsed.schemaVersion !== undefined && parsed.schemaVersion !== SCHEMA_VERSION) return normalizeSettings();
       return parsed ? normalizeSettings(parsed) : normalizeSettings();
     } catch (_) {
       return normalizeSettings();
@@ -103,7 +107,7 @@
     const normalized = normalizeSettings(settings);
     if (!storage) return normalized;
     try {
-      storage.set(STORAGE_KEY, JSON.stringify(normalized));
+      storage.set(STORAGE_KEY, JSON.stringify({ schemaVersion: SCHEMA_VERSION, ...normalized }));
     } catch (_) {
       // Storage can be unavailable or quota-limited; runtime remains usable.
     }
@@ -145,7 +149,38 @@
 
   function getEffectiveDensity(settings, metrics = {}) {
     const density = clamp(settings?.density ?? DEFAULT_SETTINGS.density, 0, 1);
-    return density * (metrics.reducedMotion ? 0.25 : 1) * (Number.isFinite(metrics.fps) && metrics.fps < 40 ? 0.5 : 1);
+    return density * (metrics.reducedMotion ? 0.25 : 1) * clamp(metrics.quality ?? 1, 0.5, 1);
+  }
+
+  // Separate thresholds and sustained intervals avoid oscillation near 40 FPS.
+  function createQualityController() {
+    let quality = 1;
+    let lowTime = 0;
+    let highTime = 0;
+    return {
+      update(dt, fps) {
+        const elapsed = Number.isFinite(dt) ? Math.max(0, dt) : 0;
+        if (fps < 40) {
+          highTime = 0;
+          lowTime += elapsed;
+          while (lowTime >= 1000) {
+            quality = Math.max(0.5, Math.round((quality - 0.1) * 100) / 100);
+            lowTime -= 500;
+          }
+        } else if (fps > 55) {
+          lowTime = 0;
+          highTime += elapsed;
+          while (highTime >= 2000) {
+            quality = Math.min(1, Math.round((quality + 0.05) * 100) / 100);
+            highTime -= 500;
+          }
+        } else {
+          lowTime = 0;
+          highTime = 0;
+        }
+        return quality;
+      },
+    };
   }
 
   function drawParticle(context, particle) {
@@ -208,9 +243,11 @@
     canvas.setAttribute('aria-hidden', 'true');
     Object.assign(canvas.style, { position: 'fixed', left: '0', top: '0', pointerEvents: 'none', zIndex: '2147483646' });
     const context = canvas.getContext('2d');
+    if (!context) throw new Error('Canvas 2D unavailable');
     (document.body || document.documentElement).appendChild(canvas);
     let settings = normalizeSettings(initialSettings);
-    let metrics = { reducedMotion: false, fps: 60 };
+    let metrics = { reducedMotion: false, fps: 60, quality: 1 };
+    const qualityController = createQualityController();
     let particles = [];
     let frameId = null;
     let lastFrameTime = null;
@@ -251,6 +288,7 @@
       const dt = lastFrameTime === null ? 16 : Math.max(0, timestamp - lastFrameTime);
       lastFrameTime = timestamp;
       if (dt > 0) metrics.fps = metrics.fps * 0.9 + Math.min(120, 1000 / dt) * 0.1;
+      metrics.quality = qualityController.update(dt, metrics.fps);
       const capacity = Math.floor(300 * getEffectiveDensity(settings, metrics));
       particles = capacity > 0 ? particles.slice(-capacity).map(particle => updateParticle(particle, dt, settings)).filter(Boolean) : [];
       context.clearRect(0, 0, width, height);
@@ -274,7 +312,9 @@
         const fraction = (i + 1) / count;
         const px = previous ? previous.x + (x - previous.x) * fraction : x;
         const py = previous ? previous.y + (y - previous.y) * fraction : y;
-        particles.push(createParticle(px, py, previous, settings, random));
+        const particle = createParticle(px, py, previous, settings, random);
+        if (metrics.reducedMotion) particle.lifetime *= 0.5;
+        particles.push(particle);
       }
       spawnCredit -= count;
       previous = { x, y };
@@ -481,11 +521,150 @@
     return { host, sync, setOpen, isOpen: () => open, containsEvent, destroy };
   }
 
-  const exported = { DEFAULT_SETTINGS, STORAGE_KEY, PRESETS, clamp, normalizeSettings, loadSettings, saveSettings, createParticle, updateParticle, shouldPause, getEffectiveDensity, createRenderer, createSettingsPanel };
+  const runtimes = new WeakMap();
+  const RUNTIME_HOST_ID = 'cursor-drift-runtime';
+
+  function createRuntime(env = {}) {
+    const window = env.window || root.window || root;
+    const document = env.document || window.document;
+    try {
+      if (!document || !['http:', 'https:'].includes(window.location.protocol) || window.top !== window) return null;
+      if (runtimes.has(document)) return runtimes.get(document);
+      if (document.getElementById?.(RUNTIME_HOST_ID)) return null;
+      if (!(document.body || document.documentElement) || typeof window.requestAnimationFrame !== 'function') return null;
+    } catch (_) {
+      return null;
+    }
+    const storage = env.storage || window;
+    let settings = loadSettings(storage);
+    let renderer;
+    let panel;
+    let destroyed = false;
+    let suspended = false;
+    let panelPointer = false;
+    const disposers = [];
+
+    function listen(target, type, handler, options) {
+      target.addEventListener(type, handler, options);
+      disposers.push(() => target.removeEventListener(type, handler, options));
+    }
+    function isEditable(element) {
+      return Boolean(element && (['INPUT', 'TEXTAREA', 'SELECT'].includes(element.tagName)
+        || element.isContentEditable || ['true', '', 'plaintext-only'].includes(element.getAttribute?.('contenteditable'))));
+    }
+    function editableFocused() {
+      let active = document.activeElement;
+      while (active) {
+        if (isEditable(active)) return true;
+        active = active.shadowRoot?.activeElement;
+      }
+      return false;
+    }
+    function hasSelection() {
+      try {
+        const selection = window.getSelection();
+        return Boolean(selection && selection.rangeCount > 0 && !selection.isCollapsed);
+      } catch (_) {
+        return false;
+      }
+    }
+    function updatePause(event) {
+      if (destroyed || !renderer) return;
+      const focusPath = event?.type === 'focusin' && typeof event.composedPath === 'function'
+        ? event.composedPath().some(isEditable) : false;
+      renderer.setPaused(suspended || panelPointer || Boolean(panel?.isOpen()) || shouldPause({
+        enabled: settings.enabled, hidden: document.hidden,
+        editableFocused: editableFocused() || focusPath, hasSelection: hasSelection(),
+      }));
+    }
+    function applySettings(next) {
+      if (destroyed) return;
+      settings = saveSettings(storage, next);
+      renderer.setSettings(settings);
+      panel.sync(settings);
+      updatePause();
+    }
+    function destroy() {
+      if (destroyed) return;
+      destroyed = true;
+      for (const dispose of disposers) dispose();
+      renderer?.destroy();
+      panel?.destroy();
+      runtimes.delete(document);
+    }
+    try {
+      renderer = createRenderer({ ...env, document, window }, settings);
+      panel = createSettingsPanel({ document, settings }, { onChange: applySettings, onOpenChange: () => updatePause() });
+      panel.host.id = RUNTIME_HOST_ID;
+      listen(document, 'pointermove', event => {
+        if (event.pointerType && event.pointerType !== 'mouse') return;
+        panelPointer = panel.containsEvent(event);
+        updatePause();
+        if (!panelPointer) renderer.addPointer(event.clientX, event.clientY);
+      }, true);
+      listen(document, 'pointerover', event => { panelPointer = panel.containsEvent(event); updatePause(); }, true);
+      listen(document, 'pointerout', event => { panelPointer = panel.containsEvent({ target: event.relatedTarget }); updatePause(); }, true);
+      listen(document, 'pointerdown', event => {
+        if (panel.containsEvent(event)) { panelPointer = true; updatePause(); }
+      }, true);
+      listen(document, 'focusin', updatePause, true);
+      listen(document, 'focusout', () => {
+        // focusout precedes the browser's next activeElement assignment.
+        (window.queueMicrotask || (callback => Promise.resolve().then(callback)))(() => updatePause());
+      }, true);
+      listen(document, 'selectionchange', updatePause);
+      listen(document, 'visibilitychange', updatePause);
+      listen(window, 'resize', () => renderer.resize());
+      listen(window, 'pagehide', event => {
+        if (event.persisted) { suspended = true; updatePause(); }
+        else destroy();
+      });
+      listen(window, 'pageshow', () => {
+        suspended = false;
+        panelPointer = false;
+        renderer.resize();
+        updatePause();
+      });
+      const media = window.matchMedia?.('(prefers-reduced-motion: reduce)');
+      if (media) {
+        const updateMotion = () => renderer.setMetrics({ reducedMotion: media.matches });
+        updateMotion();
+        if (typeof media.addEventListener === 'function') listen(media, 'change', updateMotion);
+        else if (typeof media.addListener === 'function') {
+          media.addListener(updateMotion);
+          disposers.push(() => media.removeListener(updateMotion));
+        }
+      }
+      updatePause();
+      const runtime = { panel, renderer, destroy };
+      runtimes.set(document, runtime);
+      return runtime;
+    } catch (_) {
+      destroy();
+      return null;
+    }
+  }
+
+  const exported = { DEFAULT_SETTINGS, STORAGE_KEY, PRESETS, clamp, normalizeSettings, loadSettings, saveSettings, createParticle, updateParticle, shouldPause, getEffectiveDensity, createQualityController, createRenderer, createSettingsPanel, createRuntime };
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = exported;
     return;
   }
 
-  // Bootstrap and controls are added by later implementation tasks.
+  // GM grants may be lexical sandbox bindings rather than properties on window.
+  const storage = {
+    GM_getValue: typeof GM_getValue === 'function' ? GM_getValue : undefined,
+    GM_setValue: typeof GM_setValue === 'function' ? GM_setValue : undefined,
+    get localStorage() { return root.localStorage; },
+  };
+  const window = root.window || root;
+  const document = window.document;
+  const start = () => createRuntime({ window, document, storage });
+  if (document?.readyState === 'loading') {
+    const ready = () => {
+      document.removeEventListener('DOMContentLoaded', ready);
+      start();
+    };
+    document.addEventListener('DOMContentLoaded', ready);
+  } else start();
 })(typeof globalThis !== 'undefined' ? globalThis : this);

@@ -14,6 +14,8 @@ const {
   getEffectiveDensity,
   createRenderer,
   createSettingsPanel,
+  createRuntime,
+  createQualityController,
 } = require('../cursor-drift.user.js');
 const { createDOM } = require('./helpers/dom.js');
 
@@ -153,12 +155,12 @@ test('pause policy combines disabled, hidden, editing, and selection independent
   assert.equal(shouldPause({ enabled: false }), true);
 });
 
-test('adaptive density reduces reduced-motion and slow-frame load without changing settings', () => {
+test('effective density combines quality and reduced motion without changing user settings', () => {
   const settings = normalizeSettings({ density: 0.8 });
   assert.equal(getEffectiveDensity(settings, { fps: 60 }), 0.8);
   assert.equal(getEffectiveDensity(settings, { fps: 60, reducedMotion: true }), 0.2);
-  assert.equal(getEffectiveDensity(settings, { fps: 20 }), 0.4);
-  assert.equal(getEffectiveDensity(settings, { fps: 20, reducedMotion: true }), 0.1);
+  assert.equal(getEffectiveDensity(settings, { quality: 0.5 }), 0.4);
+  assert.equal(getEffectiveDensity(settings, { quality: 0.5, reducedMotion: true }), 0.1);
   assert.equal(settings.density, 0.8);
 });
 
@@ -310,7 +312,7 @@ test('renderer adapts its real particle capacity after sustained slow frames', (
     h.advance();
   }
   assert.equal(h.advance().filter(operation => operation.name === 'fill').length, 300);
-  for (let i = 0; i < 20; i++) {
+  for (let i = 0; i < 85; i++) {
     h.renderer.addPointer(i, i);
     h.advance(50);
   }
@@ -469,4 +471,187 @@ test('panel identifies shadow interactions, releases resources and ignores stale
   assert.deepEqual(h.changes, []);
   assert.equal(h.panel.isOpen(), false);
   assert.equal(h.panel.containsEvent({ target: h.panel.host }), false);
+});
+
+// Browser APIs are boundary fakes; runtime, panel, storage and renderer stay real.
+function runtimeHarness({ protocol = 'https:', framed = false, canvasAvailable = true, readyState = 'complete', stored } = {}) {
+  const dom = createDOM();
+  const window = dom.document.createElement('window');
+  const document = dom.document;
+  Object.assign(window, { document, location: { protocol }, innerWidth: 800, innerHeight: 600, devicePixelRatio: 1 });
+  window.top = framed ? {} : window;
+  window.window = window;
+  document.parentNode = window;
+  document.readyState = readyState;
+  document.hidden = false;
+  document.getElementById = id => dom.find(document.documentElement, node => node.id === id);
+  let selection = { isCollapsed: true, rangeCount: 0, toString() { throw new Error('page text must not be read'); } };
+  window.getSelection = () => selection;
+  const media = document.createElement('media-query');
+  media.matches = false;
+  window.matchMedia = query => { assert.equal(query, '(prefers-reduced-motion: reduce)'); return media; };
+  const operations = [];
+  const context = { createRadialGradient: () => ({ addColorStop() {} }) };
+  for (const name of ['setTransform', 'clearRect', 'save', 'restore', 'translate', 'rotate', 'beginPath', 'moveTo', 'lineTo', 'closePath', 'arc', 'fill', 'stroke']) {
+    context[name] = (...args) => operations.push({ name, args, alpha: context.globalAlpha });
+  }
+  const createElement = document.createElement;
+  document.createElement = tag => {
+    const node = createElement(tag);
+    if (tag === 'canvas') node.getContext = () => canvasAvailable ? context : null;
+    return node;
+  };
+  const frames = new Map();
+  let now = 0;
+  let nextId = 0;
+  window.performance = { now: () => now };
+  window.requestAnimationFrame = callback => { frames.set(++nextId, callback); return nextId; };
+  window.cancelAnimationFrame = id => frames.delete(id);
+  window.queueMicrotask = callback => callback();
+  const backing = new Map(stored ? [[STORAGE_KEY, JSON.stringify(stored)]] : []);
+  const api = { GM_getValue: key => backing.get(key), GM_setValue: (key, value) => backing.set(key, value) };
+  const env = { document, window, storage: api, random: () => 0.5 };
+  return {
+    ...dom, document, window, media, operations, frames, env, api,
+    select(next) { selection = { ...selection, ...next }; dom.fire(document, 'selectionchange'); },
+    start() { this.runtime = createRuntime(env); return this.runtime; },
+    pointer(target = document.body, type = 'pointermove') { dom.fire(target, type, { clientX: 100, clientY: 200, pointerType: 'mouse' }); },
+    advance(ms = 16) {
+      now += ms;
+      const scheduled = [...frames.values()]; frames.clear(); operations.length = 0;
+      scheduled.forEach(callback => callback(now));
+      return operations;
+    },
+    control(name) { return dom.find(this.runtime.panel.host.shadowRoot, node => node.name === name); },
+    get canvas() { return dom.find(document.body, node => node.tagName === 'CANVAS'); },
+  };
+}
+
+// Catches instantaneous threshold jumps, chatter, and recovery without sustained headroom.
+test('quality controller degrades and recovers gradually with separate sustained thresholds', () => {
+  const quality = createQualityController();
+  assert.equal(quality.update(500, 20), 1);
+  assert.equal(quality.update(500, 20), 0.9);
+  assert.equal(quality.update(500, 20), 0.8);
+  assert.equal(quality.update(500, 45), 0.8);
+  assert.equal(quality.update(1500, 60), 0.8);
+  const recovered = quality.update(500, 60);
+  assert.ok(recovered > 0.8 && recovered <= 0.85);
+  assert.equal(quality.update(1000, 45), recovered);
+});
+
+test('runtime pauses all particles for editable focus including shadow inputs and only resumes when every guard clears', () => {
+  const h = runtimeHarness(); h.start(); h.pointer();
+  assert.equal(h.frames.size, 1);
+  const input = h.document.body.appendChild(h.document.createElement('input'));
+  Object.defineProperty(input, 'value', { get() { throw new Error('page form values must not be read'); } });
+  h.document.activeElement = input; h.fire(input, 'focusin');
+  assert.equal(h.frames.size, 0);
+  assert.equal(h.operations.at(-1).name, 'clearRect');
+  h.pointer(); assert.equal(h.frames.size, 0);
+  h.select({ isCollapsed: false, rangeCount: 1 });
+  h.document.activeElement = h.document.body; h.fire(input, 'focusout');
+  h.pointer(); assert.equal(h.frames.size, 0);
+  h.select({ isCollapsed: true }); h.pointer(); assert.equal(h.frames.size, 1);
+  const host = h.document.body.appendChild(h.document.createElement('div'));
+  host.attachShadow().activeElement = input;
+  h.document.activeElement = host; h.fire(host, 'focusin');
+  assert.equal(h.frames.size, 0);
+  h.runtime.destroy();
+});
+
+test('runtime selection detection uses collapse and range flags, and hidden documents cancel immediately', () => {
+  const h = runtimeHarness(); h.start();
+  h.select({ isCollapsed: false, rangeCount: 0 }); h.pointer(); assert.equal(h.frames.size, 1);
+  h.document.hidden = true; h.fire(h.document, 'visibilitychange'); assert.equal(h.frames.size, 0);
+  h.select({ isCollapsed: false, rangeCount: 1 });
+  h.document.hidden = false; h.fire(h.document, 'visibilitychange');
+  h.pointer(); assert.equal(h.frames.size, 0);
+  h.select({ isCollapsed: true }); h.pointer(); assert.equal(h.frames.size, 1);
+  h.runtime.destroy();
+});
+
+test('runtime panel changes save immediately while interaction pauses rendering and pointer events never leak', () => {
+  const h = runtimeHarness(); h.start(); h.pointer();
+  h.runtime.panel.setOpen(true); assert.equal(h.frames.size, 0);
+  h.control('preset').value = 'Neon Pulse'; h.fire(h.control('preset'), 'change');
+  assert.equal(loadSettings(h.api).preset, 'Neon Pulse');
+  h.pointer(h.control('size')); assert.equal(h.frames.size, 0);
+  h.runtime.panel.setOpen(false); h.pointer();
+  assert.ok(h.advance().some(operation => operation.name === 'stroke'));
+  h.control('enabled').checked = false; h.fire(h.control('enabled'), 'change');
+  assert.equal(h.frames.size, 0);
+  h.pointer(); assert.equal(h.frames.size, 0);
+  h.runtime.panel.setOpen(true); assert.equal(h.runtime.panel.isOpen(), true);
+  h.runtime.destroy();
+});
+
+test('runtime reduced motion shortens real particle lifetime while leaving manual settings saved', () => {
+  const h = runtimeHarness({ stored: { lifetime: 1000, density: 1 } }); h.start();
+  h.media.matches = true; h.fire(h.media, 'change');
+  h.pointer(); h.advance(); h.advance(490);
+  assert.equal(h.frames.size, 0, 'reduced-motion particles expire at half their normal lifetime');
+  assert.equal(loadSettings(h.api).lifetime, 1000);
+  h.control('lifetime').value = '2000'; h.fire(h.control('lifetime'), 'input');
+  h.pointer(); h.advance(); h.advance(600); assert.equal(h.frames.size, 1);
+  h.media.matches = false; h.fire(h.media, 'change');
+  assert.equal(loadSettings(h.api).lifetime, 2000);
+  h.runtime.destroy();
+});
+
+test('runtime survives resize and BFCache, creates no duplicate overlays, and tears down listeners on final pagehide', () => {
+  const h = runtimeHarness(); const runtime = h.start(); const canvas = h.canvas;
+  assert.equal(createRuntime(h.env), runtime);
+  h.window.innerWidth = 400; h.fire(h.window, 'resize');
+  assert.equal(h.canvas, canvas); assert.equal(canvas.width, 400);
+  h.pointer(); h.fire(h.window, 'pagehide', { persisted: true });
+  assert.equal(h.frames.size, 0); h.pointer(); assert.equal(h.frames.size, 0);
+  h.fire(h.window, 'pageshow', { persisted: true }); h.pointer(); assert.equal(h.frames.size, 1);
+  h.fire(h.window, 'popstate'); h.pointer(); assert.equal(h.canvas, canvas);
+  h.fire(h.window, 'pagehide', { persisted: false });
+  assert.equal(h.canvas, null); assert.equal(runtime.panel.host.parentNode, null);
+  assert.equal(h.frames.size, 0);
+  for (const target of [h.window, h.document, h.media]) {
+    assert.equal([...target.listeners.values()].reduce((sum, set) => sum + set.size, 0), 0);
+  }
+  h.pointer(); h.fire(h.media, 'change'); assert.equal(h.frames.size, 0);
+  runtime.destroy();
+});
+
+test('runtime exits quietly on unsupported pages, frames and missing canvas but works without persistence', () => {
+  for (const options of [{ protocol: 'about:' }, { framed: true }, { canvasAvailable: false }]) {
+    const h = runtimeHarness(options);
+    assert.equal(h.start(), null);
+    assert.equal(h.document.body.children.length, 0);
+    assert.equal([...h.document.listeners.values()].reduce((sum, set) => sum + set.size, 0), 0);
+  }
+  const h = runtimeHarness(); h.env.storage = {}; h.start();
+  h.control('size').value = '8'; h.fire(h.control('size'), 'input');
+  h.pointer(); assert.equal(h.frames.size, 1); h.runtime.destroy();
+});
+
+test('browser entry waits for DOM readiness, captures sandbox GM bindings and prevents duplicate installation', () => {
+  const vm = require('node:vm');
+  const source = require('node:fs').readFileSync(require.resolve('../cursor-drift.user.js'), 'utf8');
+  const h = runtimeHarness({ readyState: 'loading', stored: { preset: 'Comet Trail' } });
+  const sandbox = { globalThis: h.window, GM_getValue: h.api.GM_getValue, GM_setValue: h.api.GM_setValue };
+  vm.runInNewContext(source, sandbox);
+  assert.equal(h.document.body.children.length, 0);
+  h.document.readyState = 'interactive'; h.fire(h.document, 'DOMContentLoaded');
+  assert.equal(h.document.body.children.length, 2);
+  const panel = h.document.body.children.find(node => node.shadowRoot);
+  const preset = h.find(panel.shadowRoot, node => node.name === 'preset');
+  assert.equal(preset.value, 'Comet Trail');
+  preset.value = 'Soft Bloom'; h.fire(preset, 'change');
+  assert.equal(loadSettings(h.api).preset, 'Soft Bloom');
+  vm.runInNewContext(source, sandbox);
+  assert.equal(h.document.body.children.length, 2);
+  h.fire(h.window, 'pagehide', { persisted: false });
+});
+
+test('unknown settings schema falls back safely without losing current unversioned settings', () => {
+  const unsupported = { GM_getValue: () => JSON.stringify({ schemaVersion: 99, size: 12 }), GM_setValue() {} };
+  assert.deepEqual(loadSettings(unsupported), DEFAULT_SETTINGS);
+  const current = { GM_getValue: () => JSON.stringify({ schemaVersion: 1, size: 12 }), GM_setValue() {} };
+  assert.equal(loadSettings(current).size, 12);
 });

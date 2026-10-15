@@ -49,7 +49,12 @@ function createDOM() {
     }
   }
   document.createElement = tag => new Element(tag);
+  document.listeners = new Map();
+  for (const method of ['addEventListener', 'removeEventListener', 'dispatchEvent']) {
+    document[method] = Element.prototype[method];
+  }
   document.documentElement = new Element('html');
+  document.documentElement.parentNode = document;
   document.body = document.documentElement.appendChild(new Element('body'));
   function find(root, predicate) {
     if (predicate(root)) return root;
