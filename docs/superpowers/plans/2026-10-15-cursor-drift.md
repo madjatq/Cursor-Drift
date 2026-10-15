@@ -10,6 +10,8 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-15-cursor-drift-design.md`
 
+The initial `package.json` is private, declares Node `>=20`, and contains exactly the local verification script `{ "scripts": { "test": "node --test tests/cursor-drift.test.js" } }`; it has no runtime dependencies.
+
 ## Global Constraints
 
 - The script targets ordinary `http/https` pages and must not depend on a CDN, external runtime, or network request.
@@ -44,7 +46,7 @@
 
 - [ ] **Step 1: Write failing Node tests** for default normalization, clamping, corrupted JSON, GM storage preference, localStorage fallback, and cross-site persistence through the injected storage API.
 - [ ] **Step 2: Run `npm test`** and confirm the new tests fail because the script functions do not exist.
-- [ ] **Step 3: Implement the Tampermonkey metadata block, namespaced settings schema, safe parser, storage adapter, and test-only CommonJS export path in `cursor-drift.user.js`; do not add runtime dependencies.
+- [ ] **Step 3: Implement the Tampermonkey metadata block with `@match http://*/*`, `@match https://*/*`, `@grant GM_getValue`, and `@grant GM_setValue`, then add the namespaced settings schema, safe parser, storage adapter, and test-only CommonJS export path in `cursor-drift.user.js`; do not add runtime dependencies.
 - [ ] **Step 4: Run `npm test`** and confirm all Task 1 tests pass.
 - [ ] **Step 5: Commit** with `git add cursor-drift.user.js tests/cursor-drift.test.js package.json docs/superpowers/specs/2026-10-15-cursor-drift-design.md && git commit -m "feat: add cursor drift settings foundation"`.
 
