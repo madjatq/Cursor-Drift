@@ -1,6 +1,6 @@
 # Cursor Drift Implementation Plan
 
-**Plan version:** 1.1 | 2026-10-15
+**Plan version:** 1.2 | 2026-10-15
 
 **Status:** Tasks 1-4 implemented; 35 Node tests pass. Real-browser acceptance and remote push remain pending. See [verification record](../../verification.md). Checked red/green steps reflect recorded implementation runs, not a claim that browser checks ran.
 
@@ -117,12 +117,13 @@ The initial `package.json` is private, declares Node `>=20`, and contains exactl
 **Interfaces:**
 - Consumes the installable `cursor-drift.user.js`, test suite, README, and the user-created public GitHub repository.
 
-- [x] **Step 1: Run the fresh verification set:** `npm.cmd test` (35 pass, 0 fail), `node --check cursor-drift.user.js`, metadata/static checks confirming exact matches/grants and no `@require`, `@connect`, runtime external URL or network API, and `git diff --check`.
+- [x] **Step 1: Run the fresh verification set:** `npm.cmd test` (36 pass, 0 fail), `node --check cursor-drift.user.js`, metadata/static checks confirming exact matches/grants and no `@require`, `@connect`, runtime external URL or network API, and `git diff --check`.
 - [ ] **Step 2: Install the userscript in Tampermonkey on a local test page and manually verify default particles, all four presets, immediate controls, cross-site GM persistence, focus/selection/visibility pauses, reduced-motion behavior, keyboard operation, and click-through behavior.
 - [x] **Step 3: Record verification status and limitations** in README and `docs/verification.md`; run the full available verification set. No browser product assertions ran: automatic approval rejected the launch with `rejected: blocked by policy`, and no CUA browser was available. Real-browser findings remain pending Step 2.
 - [x] **Step 4: Read the configured Git remote:** existing `origin` is `https://github.com/madjatq/Cursor-Drift.git`; no initialization or remote replacement needed. Do not force-push or overwrite unrelated remote history.
-- [ ] **Step 5: Push the verified commits to the configured default branch, then run `git status --short --branch` and `git log -1 --oneline` to verify the local branch is clean and points at the published commit.
+- [x] **Step 5: Push verified commits to `origin/main`**; verify the remote commit and clean tracking branch, then download the installation URL (HTTP 200) and confirm its Git blob matches the tested script. Publication evidence is in `docs/verification.md`.
 
 ## Change log
 
 - 1.1 (2026-10-15): Record completed implementation and automated checks, actual remote, resize/SPA continuity and pagehide cleanup; separate pending browser acceptance and push from completed work.
+- 1.2 (2026-10-15): Record 36 passing tests, final review fix and completed GitHub publication with matching downloaded script; manual browser checks remain pending.
