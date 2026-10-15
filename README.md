@@ -1,6 +1,6 @@
 # Cursor Drift
 
-Version 0.1.0 · 文档版本 / Documentation v1.1 · 2026-10-15
+Version 0.1.0 · 文档版本 / Documentation v1.2 · 2026-10-15
 
 在普通网页上显示可调节的鼠标粒子拖尾。无需 CDN、构建步骤或运行时依赖。
 A configurable cursor particle trail for ordinary websites, without CDNs, build steps, or runtime dependencies.
@@ -43,7 +43,7 @@ Tampermonkey 的 `GM_getValue/GM_setValue` 将设置保存在本浏览器该脚�
 
 没有效果时，先确认页面协议、脚本启用和网站访问权限，再刷新页面；清除文本选择，移开输入焦点，收起设置面板，检查总开关及密度。若只有某个网站冲突，可用总开关暂时关闭效果，或在 Tampermonkey 中排除该网站（总开关是跨网站设置）。设置不能跨网站保留时，检查 GM 权限是否生效；网站存储回退不会跨来源。
 
-本仓库 Node 测试覆盖模拟、真实运行时组合、DOM/Canvas 边界和自启动；没有据此宣称实际安装 Tampermonkey、Firefox 兼容性或浏览器视觉验收已完成。开发验证：安装 Node.js 20+ 后执行 `npm test` 和 `node --check cursor-drift.user.js`。
+本仓库 35 项 Node 测试通过，覆盖模拟、真实运行时组合、DOM/Canvas 边界和自启动。真实浏览器验收因当前验证环境限制而受阻，实际安装 Tampermonkey、Firefox 兼容性及视觉验收仍待完成，详见 [验证记录](docs/verification.md)。开发验证：安装 Node.js 20+ 后执行 `npm test`（Windows PowerShell 可用 `npm.cmd test`）和 `node --check cursor-drift.user.js`。
 
 实际浏览器验收步骤：
 
@@ -82,7 +82,7 @@ If nothing appears, check the page protocol, extension/site permissions, enable 
 
 ### Validation and development
 
-Node.js 20+ is sufficient for `npm test` and `node --check cursor-drift.user.js`; no dependency installation is needed. The automated suite exercises simulation, combined runtime behavior, DOM/Canvas boundaries, and browser startup. It does not establish an installed Tampermonkey test, Firefox compatibility, or visual acceptance.
+Node.js 20+ is sufficient for `npm test` (`npm.cmd test` in Windows PowerShell) and `node --check cursor-drift.user.js`; no dependency installation is needed. All 35 Node tests pass, exercising simulation, combined runtime behavior, DOM/Canvas boundaries, and startup. Real browser acceptance is blocked by the current verification environment; installed Tampermonkey, Firefox compatibility, and visual acceptance remain pending. See the [verification record](docs/verification.md).
 
 For browser acceptance, check all presets and controls on two websites, reload/cross-site persistence, overlapping editing/selection/hidden states, Shadow DOM focus, resize, SPA and history navigation, reduced motion, gradual performance recovery, keyboard access and small viewports. Check that page clicks/scrolling remain usable, only one overlay exists, idle frames stop, and no script network requests occur. Repeat in Chromium and Firefox and record versions and screenshots.
 
@@ -94,3 +94,4 @@ MIT © 2026 madjatq. See [LICENSE](LICENSE).
 
 - 0.1.0 / 文档 v1.0 (2026-10-15): Initial userscript, four presets, Chinese panel, global settings, lifecycle guards and release instructions. 首版脚本、四种预设、中文面板、全局设置与生命周期保护。
 - 文档 / Documentation v1.1 (2026-10-15): Clarify live preview outside the expanded panel. 补充面板展开时移到面板外即时预览。
+- 文档 / Documentation v1.2 (2026-10-15): Record 35 passing Node tests and pending browser acceptance with evidence and manual steps. 补充验证记录，明确自动化证据和浏览器验收限制。
