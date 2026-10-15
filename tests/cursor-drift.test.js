@@ -573,12 +573,14 @@ test('runtime selection detection uses collapse and range flags, and hidden docu
 
 test('runtime panel changes save immediately while interaction pauses rendering and pointer events never leak', () => {
   const h = runtimeHarness(); h.start(); h.pointer();
-  h.runtime.panel.setOpen(true); assert.equal(h.frames.size, 0);
+  h.runtime.panel.setOpen(true);
+  h.pointer(h.control('size'), 'pointerover'); assert.equal(h.frames.size, 0);
   h.control('preset').value = 'Neon Pulse'; h.fire(h.control('preset'), 'change');
   assert.equal(loadSettings(h.api).preset, 'Neon Pulse');
   h.pointer(h.control('size')); assert.equal(h.frames.size, 0);
-  h.runtime.panel.setOpen(false); h.pointer();
+  h.pointer();
   assert.ok(h.advance().some(operation => operation.name === 'stroke'));
+  assert.equal(h.runtime.panel.isOpen(), true, 'preview works outside the expanded panel even while its control retains focus');
   h.control('enabled').checked = false; h.fire(h.control('enabled'), 'change');
   assert.equal(h.frames.size, 0);
   h.pointer(); assert.equal(h.frames.size, 0);

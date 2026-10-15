@@ -554,6 +554,7 @@
     }
     function editableFocused() {
       let active = document.activeElement;
+      if (panel?.containsEvent({ target: active })) return false;
       while (active) {
         if (isEditable(active)) return true;
         active = active.shadowRoot?.activeElement;
@@ -570,9 +571,9 @@
     }
     function updatePause(event) {
       if (destroyed || !renderer) return;
-      const focusPath = event?.type === 'focusin' && typeof event.composedPath === 'function'
+      const focusPath = event?.type === 'focusin' && !panel?.containsEvent(event) && typeof event.composedPath === 'function'
         ? event.composedPath().some(isEditable) : false;
-      renderer.setPaused(suspended || panelPointer || Boolean(panel?.isOpen()) || shouldPause({
+      renderer.setPaused(suspended || panelPointer || shouldPause({
         enabled: settings.enabled, hidden: document.hidden,
         editableFocused: editableFocused() || focusPath, hasSelection: hasSelection(),
       }));

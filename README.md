@@ -1,6 +1,6 @@
 # Cursor Drift
 
-Version 0.1.0 · 文档版本 / Documentation v1.0 · 2026-10-15
+Version 0.1.0 · 文档版本 / Documentation v1.1 · 2026-10-15
 
 在普通网页上显示可调节的鼠标粒子拖尾。无需 CDN、构建步骤或运行时依赖。
 A configurable cursor particle trail for ordinary websites, without CDNs, build steps, or runtime dependencies.
@@ -16,7 +16,7 @@ A configurable cursor particle trail for ordinary websites, without CDNs, build 
 
 ### 使用与设置
 
-面板默认收起，不占网页布局空间；Tab 可访问原生控件，Esc 收起面板并返回触发按钮。修改立即生效，旧粒子会清除。
+面板默认收起，不占网页布局空间；Tab 可访问原生控件，Esc 收起面板并返回触发按钮。修改立即生效，旧粒子会清除；移到面板外即可预览，面板可以保持展开。
 
 | 预设 | 效果 |
 | --- | --- |
@@ -60,7 +60,7 @@ Tampermonkey 的 `GM_getValue/GM_setValue` 将设置保存在本浏览器该脚�
 
 Install [Tampermonkey](https://www.tampermonkey.net/) in a modern desktop Chromium browser or Firefox, then open [Install Cursor Drift](https://raw.githubusercontent.com/madjatq/Cursor-Drift/main/cursor-drift.user.js) and confirm installation. The link requires the public repository to contain the script; alternatively, create a new userscript and paste the complete `cursor-drift.user.js` file. Enable the extension and grant access to your website. Follow Tampermonkey's current instructions if Chromium asks you to enable “Allow user scripts” or developer mode. Refresh an ordinary HTTP/HTTPS page and move your mouse.
 
-The Chinese panel opens from the top-right button. Tab reaches native controls; Escape collapses it. Changes apply immediately. The nine controls are enable, preset, color mode, custom color, size, density, lifetime, speed, and opacity. Preset palettes and a retained custom color are available. Preset-specific size, lifetime, and speed scales preserve each effect's character.
+The Chinese panel opens from the top-right button. Tab reaches native controls; Escape collapses it. Changes apply immediately; move outside the panel to preview while keeping it expanded. The nine controls are enable, preset, color mode, custom color, size, density, lifetime, speed, and opacity. Preset palettes and a retained custom color are available. Preset-specific size, lifetime, and speed scales preserve each effect's character.
 
 The four presets are **Stardust** (rotating stars), **Neon Pulse** (glowing rings), **Soft Bloom** (soft gradient blooms), and **Comet Trail** (directional strokes with bright heads).
 
@@ -93,3 +93,4 @@ MIT © 2026 madjatq. See [LICENSE](LICENSE).
 ## Change log / 变更记录
 
 - 0.1.0 / 文档 v1.0 (2026-10-15): Initial userscript, four presets, Chinese panel, global settings, lifecycle guards and release instructions. 首版脚本、四种预设、中文面板、全局设置与生命周期保护。
+- 文档 / Documentation v1.1 (2026-10-15): Clarify live preview outside the expanded panel. 补充面板展开时移到面板外即时预览。
