@@ -309,7 +309,179 @@
     return { addPointer, setSettings, setPaused, setMetrics, resize, destroy };
   }
 
-  const exported = { DEFAULT_SETTINGS, STORAGE_KEY, PRESETS, clamp, normalizeSettings, loadSettings, saveSettings, createParticle, updateParticle, shouldPause, getEffectiveDensity, createRenderer };
+  // Owns only its Shadow DOM. Bootstrap owns persistence and renderer updates.
+  function createSettingsPanel(state, callbacks = {}) {
+    const document = state.document || root.document;
+    let settings = normalizeSettings(state.settings);
+    let open = false;
+    let destroyed = false;
+    const listeners = [];
+    const controls = {};
+    const readouts = {};
+    const host = document.createElement('div');
+    Object.assign(host.style, {
+      all: 'initial', position: 'fixed', top: '12px', right: '12px',
+      width: '312px', maxWidth: 'calc(100vw - 24px)',
+      pointerEvents: 'none', zIndex: '2147483647',
+      font: '13px/1.5 system-ui, -apple-system, "Microsoft YaHei", sans-serif',
+      color: '#e8edf5', colorScheme: 'dark',
+    });
+    const shadow = host.attachShadow({ mode: 'open' });
+
+    function element(tag, parent, text) {
+      const node = document.createElement(tag);
+      if (text !== undefined) node.textContent = text;
+      parent.appendChild(node);
+      return node;
+    }
+    function listen(node, type, handler) {
+      node.addEventListener(type, handler);
+      listeners.push(() => node.removeEventListener(type, handler));
+    }
+    const style = element('style', shadow);
+    style.textContent = `
+      *, *::before, *::after { box-sizing: border-box; }
+      [hidden] { display: none !important; }
+      button, input, select { font: inherit; }
+      button, select, input { accent-color: #78dce8; }
+      button, select { color: #e8edf5; background: #252d3a; border: 1px solid #485465; border-radius: 8px; }
+      button { min-height: 36px; padding: 7px 12px; cursor: pointer; }
+      button:hover { background: #344254; }
+      button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid #8ee8f1; outline-offset: 3px; }
+      .trigger { display: block; margin-left: auto; background: rgba(21, 28, 39, .94); box-shadow: 0 4px 18px #0004; }
+      .card { margin-top: 9px; padding: 16px; border: 1px solid #ffffff26; border-radius: 14px; background: rgba(19, 26, 37, .96); box-shadow: 0 14px 42px #0005; backdrop-filter: blur(16px); scrollbar-width: thin; }
+      .heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 14px; }
+      h2 { margin: 0; font-size: 15px; font-weight: 650; letter-spacing: .02em; }
+      .close { padding: 4px 9px; font-size: 12px; }
+      .row { display: grid; grid-template-columns: 1fr auto; gap: 6px 12px; align-items: center; margin: 13px 0; }
+      label { color: #dce3ee; }
+      select, input[type="range"], input[type="color"] { grid-column: 1 / -1; width: 100%; min-width: 0; }
+      select { min-height: 36px; padding: 6px 8px; }
+      input[type="range"] { margin: 3px 0; min-height: 24px; cursor: pointer; }
+      input[type="checkbox"] { width: 18px; height: 18px; margin: 0; cursor: pointer; }
+      input[type="color"] { height: 34px; padding: 3px; border: 1px solid #485465; border-radius: 7px; background: #252d3a; cursor: pointer; }
+      input:disabled { opacity: .4; cursor: default; }
+      output { color: #8ee8f1; font-size: 12px; font-variant-numeric: tabular-nums; }
+      .hint { margin: 14px 0 0; color: #a3afbf; font-size: 11px; }
+      @media (forced-colors: active) { .card, .trigger { border: 1px solid CanvasText; } }
+    `;
+    const trigger = element('button', shadow, '✦ 鼠标特效');
+    trigger.type = 'button';
+    trigger.className = 'trigger';
+    trigger.style.pointerEvents = 'auto';
+    trigger.setAttribute('aria-controls', 'cursor-drift-settings');
+    trigger.setAttribute('aria-expanded', 'false');
+    const content = element('section', shadow);
+    content.id = 'cursor-drift-settings';
+    content.className = 'card';
+    content.hidden = true;
+    content.setAttribute('aria-labelledby', 'cursor-drift-title');
+    Object.assign(content.style, { pointerEvents: 'auto', maxHeight: 'calc(100dvh - 76px)', overflowY: 'auto' });
+    const heading = element('div', content);
+    heading.className = 'heading';
+    element('h2', heading, '鼠标特效设置').id = 'cursor-drift-title';
+    const close = element('button', heading, '收起');
+    close.type = 'button';
+    close.className = 'close';
+    close.setAttribute('aria-label', '收起鼠标特效设置');
+
+    function addControl(name, labelText, tag, type) {
+      const row = element('div', content);
+      row.className = 'row';
+      const label = element('label', row, labelText);
+      const control = element(tag, row);
+      control.name = name;
+      control.id = `cursor-drift-${name}`;
+      label.htmlFor = control.id;
+      if (type) control.type = type;
+      controls[name] = control;
+      return { row, control };
+    }
+    function addSelect(name, label, options) {
+      const { control } = addControl(name, label, 'select');
+      for (const [value, text] of options) element('option', control, text).value = value;
+    }
+    addControl('enabled', '启用特效', 'input', 'checkbox');
+    const presetLabels = { Stardust: '星尘', 'Neon Pulse': '霓虹脉冲', 'Soft Bloom': '柔光绽放', 'Comet Trail': '彗星拖尾' };
+    addSelect('preset', '效果预设', Object.keys(PRESETS).map(name => [name, `${presetLabels[name]} · ${name}`]));
+    addSelect('colorMode', '颜色模式', [['preset', '跟随预设'], ['custom', '自选颜色']]);
+    addControl('customColor', '自选颜色', 'input', 'color');
+    const numericControls = [
+      ['size', '大小', 1, 20, 0.5], ['density', '密度', 0, 1, 0.05],
+      ['lifetime', '寿命', 100, 3000, 50], ['speed', '速度', 0.1, 3, 0.1], ['opacity', '透明度', 0, 1, 0.05],
+    ];
+    for (const [name, label, min, max, step] of numericControls) {
+      const { row, control } = addControl(name, label, 'input', 'range');
+      control.min = String(min);
+      control.max = String(max);
+      control.step = String(step);
+      const output = element('output', row);
+      output.htmlFor = control.id;
+      // The range is on its own second row; the value remains beside its label.
+      output.style.gridColumn = '2';
+      output.style.gridRow = '1';
+      readouts[name] = output;
+    }
+    element('p', content, '调整即时生效 · 按 Esc 收起').className = 'hint';
+
+    function sync(nextSettings) {
+      if (destroyed) return;
+      settings = normalizeSettings(nextSettings);
+      for (const [name, control] of Object.entries(controls)) {
+        if (name === 'enabled') control.checked = settings.enabled;
+        else control.value = String(settings[name]);
+      }
+      controls.customColor.disabled = settings.colorMode !== 'custom';
+      for (const [name, output] of Object.entries(readouts)) {
+        const value = settings[name];
+        output.textContent = name === 'density' || name === 'opacity' ? `${Math.round(value * 100)}%`
+          : name === 'lifetime' ? `${value} ms` : name === 'size' ? `${value} px` : `${value}×`;
+      }
+    }
+    function setOpen(value) {
+      if (destroyed || open === Boolean(value)) return;
+      open = Boolean(value);
+      content.hidden = !open;
+      trigger.setAttribute('aria-expanded', String(open));
+      if (open) controls.enabled.focus();
+      else trigger.focus();
+      if (typeof callbacks.onOpenChange === 'function') callbacks.onOpenChange(open);
+    }
+    for (const [name, control] of Object.entries(controls)) {
+      listen(control, name === 'enabled' || control.tagName === 'SELECT' ? 'change' : 'input', () => {
+        if (destroyed) return;
+        const value = name === 'enabled' ? control.checked : control.value;
+        sync({ ...settings, [name]: value });
+        if (typeof callbacks.onChange === 'function') callbacks.onChange({ ...settings });
+      });
+    }
+    listen(trigger, 'click', () => setOpen(!open));
+    listen(close, 'click', () => setOpen(false));
+    listen(shadow, 'keydown', event => {
+      if (event.key === 'Escape' && open) {
+        event.preventDefault();
+        event.stopPropagation();
+        setOpen(false);
+      }
+    });
+    function containsEvent(event) {
+      if (destroyed || !event) return false;
+      if (typeof event.composedPath === 'function' && event.composedPath().includes(host)) return true;
+      return Boolean(event.target && (host.contains(event.target) || shadow.contains(event.target)));
+    }
+    function destroy() {
+      if (destroyed) return;
+      destroyed = true;
+      open = false;
+      for (const removeListener of listeners) removeListener();
+      host.remove();
+    }
+    sync(settings);
+    (document.body || document.documentElement).appendChild(host);
+    return { host, sync, setOpen, isOpen: () => open, containsEvent, destroy };
+  }
+
+  const exported = { DEFAULT_SETTINGS, STORAGE_KEY, PRESETS, clamp, normalizeSettings, loadSettings, saveSettings, createParticle, updateParticle, shouldPause, getEffectiveDensity, createRenderer, createSettingsPanel };
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = exported;
     return;

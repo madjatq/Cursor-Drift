@@ -13,7 +13,9 @@ const {
   shouldPause,
   getEffectiveDensity,
   createRenderer,
+  createSettingsPanel,
 } = require('../cursor-drift.user.js');
+const { createDOM } = require('./helpers/dom.js');
 
 test('normalizes missing settings to the complete defaults', () => {
   assert.deepEqual(normalizeSettings(), DEFAULT_SETTINGS);
@@ -325,4 +327,146 @@ test('renderer forgets the last pointer after natural expiry so idle time cannot
   h.renderer.addPointer(200, 300);
   assert.equal(h.advance().filter(operation => operation.name === 'fill').length, 1);
   h.renderer.destroy();
+});
+
+function panelHarness(settings = {}, callbacks = {}) {
+  const dom = createDOM();
+  const changes = [];
+  const panel = createSettingsPanel({ document: dom.document, settings }, {
+    onChange: next => changes.push(next), ...callbacks,
+  });
+  const shadow = panel.host.shadowRoot;
+  return {
+    ...dom, panel, shadow, changes,
+    control: name => dom.find(shadow, node => node.name === name),
+    trigger: dom.find(shadow, node => node.getAttribute('aria-controls') === 'cursor-drift-settings'),
+    content: dom.find(shadow, node => node.id === 'cursor-drift-settings'),
+  };
+}
+
+// Catches an expanded/in-flow panel, unlabeled controls, and keyboard dead ends.
+test('panel is isolated, initially collapsed, Chinese and keyboard operable', () => {
+  const h = panelHarness();
+  assert.equal(h.panel.host.parentNode, h.document.body);
+  assert.equal(h.panel.host.style.position, 'fixed');
+  assert.equal(h.panel.host.style.pointerEvents, 'none');
+  assert.match(h.panel.host.style.font, /system-ui/, 'host reset must preserve the panel font');
+  assert.equal(h.panel.host.style.colorScheme, 'dark');
+  assert.match(h.panel.host.style.maxWidth, /100vw/);
+  assert.equal(h.trigger.tagName, 'BUTTON');
+  assert.equal(h.trigger.type, 'button');
+  assert.equal(h.trigger.style.pointerEvents, 'auto');
+  assert.equal(h.trigger.getAttribute('aria-expanded'), 'false');
+  assert.equal(h.content.hidden, true);
+  assert.equal(h.panel.isOpen(), false);
+  for (const text of ['鼠标特效', '启用特效', '效果预设', '颜色模式', '自选颜色', '大小', '密度', '寿命', '速度', '透明度']) {
+    assert.ok(h.shadow.textContent.includes(text), text);
+  }
+  for (const name of ['enabled', 'preset', 'colorMode', 'customColor', 'size', 'density', 'lifetime', 'speed', 'opacity']) {
+    const control = h.control(name);
+    const label = h.find(h.shadow, node => node.tagName === 'LABEL' && node.htmlFor === control.id);
+    assert.ok(label?.textContent, `${name} must have a visible associated label`);
+    assert.ok(['INPUT', 'SELECT'].includes(control.tagName));
+  }
+  h.fire(h.trigger, 'click');
+  assert.equal(h.content.hidden, false);
+  assert.match(h.content.style.maxHeight, /100dvh/);
+  assert.equal(h.content.style.overflowY, 'auto');
+  assert.equal(h.trigger.getAttribute('aria-expanded'), 'true');
+  assert.equal(h.document.activeElement, h.control('enabled'));
+  assert.equal(h.fire(h.control('size'), 'keydown', { key: 'Escape' }), false);
+  assert.equal(h.content.hidden, true);
+  assert.equal(h.document.activeElement, h.trigger);
+  assert.deepEqual(h.changes, []);
+});
+
+// Catches controls that update UI only, wrong setting keys, or partial/unsafe callbacks.
+test('panel controls emit full normalized settings with live numeric readouts', () => {
+  const h = panelHarness();
+  h.panel.setOpen(true);
+  const updates = [
+    ['enabled', false, 'change'], ['preset', 'Comet Trail', 'change'],
+    ['colorMode', 'custom', 'change'], ['customColor', '#123abc', 'input'],
+    ['size', '12', 'input'], ['density', '0.25', 'input'],
+    ['lifetime', '1200', 'input'], ['speed', '2.1', 'input'], ['opacity', '0.45', 'input'],
+  ];
+  for (const [name, value, type] of updates) {
+    if (name === 'enabled') h.control(name).checked = value;
+    else h.control(name).value = value;
+    h.fire(h.control(name), type);
+  }
+  assert.equal(h.changes.length, 9);
+  assert.deepEqual(h.changes[8], { enabled: false, preset: 'Comet Trail', colorMode: 'custom', customColor: '#123abc', size: 12, density: 0.25, lifetime: 1200, speed: 2.1, opacity: 0.45 });
+  assert.equal(h.changes[0].preset, 'Stardust', 'previous callback snapshots remain independent');
+  assert.equal(h.find(h.shadow, node => node.tagName === 'OUTPUT' && node.htmlFor === h.control('lifetime').id).textContent, '1200 ms');
+  assert.equal(h.find(h.shadow, node => node.tagName === 'OUTPUT' && node.htmlFor === h.control('density').id).textContent, '25%');
+  h.control('size').value = '999';
+  h.fire(h.control('size'), 'input');
+  assert.equal(h.changes[9].size, 20);
+  assert.equal(h.control('size').value, '20');
+});
+
+// Catches duplicate persistence during synchronization and disabled color controls.
+test('panel sync normalizes external settings without writing them back', () => {
+  const h = panelHarness();
+  assert.equal(h.control('customColor').disabled, true);
+  h.panel.setOpen(true);
+  h.panel.sync({ preset: 'Soft Bloom', colorMode: 'custom', customColor: '#aabbcc', enabled: false, density: 9 });
+  assert.equal(h.control('preset').value, 'Soft Bloom');
+  assert.equal(h.control('enabled').checked, false);
+  assert.equal(h.control('customColor').disabled, false);
+  assert.equal(h.control('customColor').value, '#aabbcc');
+  assert.equal(h.control('density').value, '1');
+  assert.equal(h.panel.isOpen(), true);
+  assert.deepEqual(h.changes, []);
+  h.control('colorMode').value = 'preset';
+  h.fire(h.control('colorMode'), 'change');
+  assert.equal(h.control('customColor').disabled, true);
+  assert.equal(h.changes[0].customColor, '#aabbcc');
+});
+
+// Catches missing callback invocation and delayed renderer/storage application.
+test('panel callback can save and update the real renderer immediately', () => {
+  const renderer = rendererHarness();
+  const storage = new Map();
+  const api = { GM_getValue: key => storage.get(key), GM_setValue: (key, value) => storage.set(key, value) };
+  const h = panelHarness({}, { onChange(next) { renderer.renderer.setSettings(saveSettings(api, next)); } });
+  renderer.renderer.addPointer(10, 20);
+  assert.equal(renderer.frames.size, 1);
+  h.control('enabled').checked = false;
+  h.fire(h.control('enabled'), 'change');
+  assert.equal(renderer.frames.size, 0);
+  assert.equal(loadSettings(api).enabled, false);
+  h.control('enabled').checked = true;
+  h.fire(h.control('enabled'), 'change');
+  h.control('preset').value = 'Neon Pulse';
+  h.fire(h.control('preset'), 'change');
+  renderer.renderer.addPointer(10, 20);
+  assert.ok(renderer.advance().some(operation => operation.name === 'stroke'));
+  assert.equal(loadSettings(api).preset, 'Neon Pulse');
+  renderer.renderer.destroy();
+});
+
+// Catches shadow-retargeting leaks in the Task4 pointer guard and stale listeners.
+test('panel identifies shadow interactions, releases resources and ignores stale controls', () => {
+  const transitions = [];
+  const h = panelHarness({}, { onOpenChange: value => transitions.push(value) });
+  assert.equal(h.panel.containsEvent({ target: h.panel.host }), true);
+  assert.equal(h.panel.containsEvent({ target: h.document.body, composedPath: () => [h.control('size'), h.shadow, h.panel.host, h.document.body] }), true);
+  assert.equal(h.panel.containsEvent({ target: h.document.body }), false);
+  h.panel.setOpen(true);
+  h.panel.setOpen(true);
+  h.panel.setOpen(false);
+  assert.deepEqual(transitions, [true, false]);
+  h.panel.destroy();
+  h.panel.destroy();
+  assert.equal(h.panel.host.parentNode, null);
+  h.control('size').value = '15';
+  h.fire(h.control('size'), 'input');
+  h.fire(h.trigger, 'click');
+  h.panel.setOpen(true);
+  h.panel.sync({ size: 10 });
+  assert.deepEqual(h.changes, []);
+  assert.equal(h.panel.isOpen(), false);
+  assert.equal(h.panel.containsEvent({ target: h.panel.host }), false);
 });
